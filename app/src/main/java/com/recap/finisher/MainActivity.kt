@@ -20,13 +20,17 @@ import com.recap.finisher.export.RecapExporter
 import com.recap.finisher.export.SegmentExporter
 import com.recap.finisher.export.TimeRange
 import com.recap.finisher.media.MediaInfo
+import com.recap.finisher.scene.Scene
 import com.recap.finisher.scene.SceneActivity
+import com.recap.finisher.scene.SceneDetector
+import com.recap.finisher.scene.SceneMatcher
 import com.recap.finisher.subtitle.SrtCue
 import com.recap.finisher.subtitle.SrtIssue
 import com.recap.finisher.subtitle.SrtParser
 import com.recap.finisher.subtitle.SrtTimeTools
 import com.recap.finisher.subtitle.VideoSize
 import java.io.File
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.min
 
@@ -44,9 +48,16 @@ class MainActivity : AppCompatActivity() {
 
     private var exportStatus = ""
     private var recapStatus = ""
+    private var matchStatus = ""
     private var segmentFile: File? = null
     private var recapFile: File? = null
     private var savingRecap = false
+
+    // Scene Matching
+    private var scenes: List<Scene> = emptyList()
+    private var scenesFor: Uri? = null
+    @Volatile private var matchCancelled = false
+    @Volatile private var matchRunning = false
 
     private lateinit var infoView: TextView
     private lateinit var startInput: EditText
@@ -145,8 +156,9 @@ class MainActivity : AppCompatActivity() {
         root.addView(button("ဖြတ်ပြီးဖိုင်ကို MP4 အဖြစ်သိမ်း") { doSaveSegment() })
 
         root.addView(title("Segment များပေါင်း + MP3 + စာတန်း"))
+        root.addView(button("🤖 Scene ရှာ + အလိုအလျောက်ရွေး") { doAutoMatch() })
         rangesInput = EditText(this).apply {
-            hint = "တစ်ကြောင်းကို Segment တစ်ခု (စက္ကန့်)\nဥပမာ\n5-12\n40-48.5\n100-110"
+            hint = "တစ်ကြောင်းကို Segment တစ်ခု (စက္ကန့်)\nအလိုအလျောက်ရွေးရင် ဒီမှာ ဖြည့်ပေးမယ်\nကိုယ်တိုင်လည်း ရိုက်လို့ရတယ်\n5-12\n40-48.5"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             minLines = 4
             gravity = Gravity.TOP
@@ -157,7 +169,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(button("ပေါင်း + MP3 ထည့်ပြီး Export") { doRecap() })
         root.addView(button("ပေါင်းပြီး MP4 ကို သိမ်း") { doSaveRecap() })
 
-        root.addView(button("Export အားလုံး ရပ်မယ် (Cancel)") { doCancel() })
+        root.addView(button("Export/Scene ရှာတာ အားလုံး ရပ်မယ် (Cancel)") { doCancel() })
 
         infoView = TextView(this).apply {
             textSize = 14f
@@ -171,6 +183,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        matchCancelled = true
         if (exporter.isRunning) exporter.cancel()
         if (recapExporter.isRunning) recapExporter.cancel()
         super.onDestroy()
@@ -297,6 +310,96 @@ class MainActivity : AppCompatActivity() {
         saveMp4.launch("segment.mp4")
     }
 
+    // ---------- Scene ရှာ + အလိုအလျောက်ရွေး ----------
+
+    private fun doAutoMatch() {
+        val vUri = videoUri
+        if (vUri == null) { toast("Video အရင်ရွေးပါ"); return }
+        if (!requireCues()) return
+        if (mp3Ms <= 0L) { toast("MP3 အရင်ရွေးပါ"); return }
+        if (videoMs <= 0L) { toast("Video ကြာချိန် ဖတ်မရပါ"); return }
+        if (matchRunning) { toast("Scene ရှာနေဆဲ"); return }
+        if (exporter.isRunning || recapExporter.isRunning) { toast("Export လုပ်နေဆဲ"); return }
+
+        // ဒီ Video အတွက် Scene ရှာပြီးသားဆိုရင် ပြန်မရှာဘဲ ပြန်သုံး
+        if (scenesFor == vUri && scenes.isNotEmpty()) {
+            applyMatch(scenes)
+            return
+        }
+
+        matchCancelled = false
+        matchRunning = true
+        matchStatus = "Scene ရှာနေသည်..."
+        refresh()
+        val startTime = System.currentTimeMillis()
+
+        Thread {
+            var found: List<Scene>? = null
+            var err: String? = null
+            try {
+                found = SceneDetector.detect(
+                    context = this,
+                    uri = vUri,
+                    durationMs = videoMs,
+                    threshold = 0.30,
+                    isCancelled = { matchCancelled },
+                    onProgress = { p ->
+                        runOnUiThread {
+                            matchStatus = "Scene ရှာနေသည်: $p%"
+                            refresh()
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                err = e.message ?: e.javaClass.simpleName
+            }
+            val f = found
+            val e = err
+            runOnUiThread {
+                matchRunning = false
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                val secs = (System.currentTimeMillis() - startTime) / 1000
+                when {
+                    e != null -> { matchStatus = "Error: $e"; refresh() }
+                    matchCancelled -> { matchStatus = "Cancel လုပ်ပြီးပါပြီ"; refresh() }
+                    f.isNullOrEmpty() -> { matchStatus = "Scene မတွေ့ပါ"; refresh() }
+                    else -> {
+                        scenes = f
+                        scenesFor = vUri
+                        applyMatch(f, "(Scene ရှာချိန် ${secs}s)")
+                    }
+                }
+            }
+        }.start()
+    }
+
+    private fun applyMatch(list: List<Scene>, extra: String = "") {
+        val r = SceneMatcher.match(cues, list, mp3Ms, videoMs)
+        if (r.groups.isEmpty()) {
+            matchStatus = r.warnings.joinToString("\n")
+            refresh()
+            return
+        }
+        rangesInput.setText(
+            r.groups.joinToString("\n") { "${sec(it.clip.startMs)}-${sec(it.clip.endMs)}" }
+        )
+        val sb = StringBuilder()
+        sb.append("✓ Scene ${list.size} ခုထဲက Segment ${r.groups.size} ခု ရွေးပြီး $extra\n")
+        sb.append("Clip စုစုပေါင်း: ${r.totalMs / 1000}s၊ MP3: ${mp3Ms / 1000}s\n")
+        sb.append("ကျော်ထားသော Scene: ${r.skippedScenes} ခု\n")
+        if (r.warnings.isEmpty()) {
+            sb.append("သတိပေးချက် မရှိပါ")
+        } else {
+            sb.append("⚠ သတိပေးချက် ${r.warnings.size} ခု\n")
+            r.warnings.take(10).forEach { sb.append("• $it\n") }
+            if (r.warnings.size > 10) sb.append("... နောက်ထပ် ${r.warnings.size - 10} ခု")
+        }
+        matchStatus = sb.toString()
+        refresh()
+    }
+
+    private fun sec(ms: Long): String = String.format(Locale.US, "%.3f", ms / 1000.0)
+
     // ---------- Segment များပေါင်း + MP3 + စာတန်း ----------
 
     private fun parseRanges(text: String): Pair<List<TimeRange>, String?> {
@@ -314,10 +417,10 @@ class MainActivity : AppCompatActivity() {
             }
             val startMs = (s * 1000).toLong()
             val endMs = (e * 1000).toLong()
-            if (videoMs > 0L && endMs > videoMs) {
+            if (videoMs > 0L && endMs > videoMs + 50) {
                 return Pair(emptyList(), "စာကြောင်း ${i + 1}: Video ကြာချိန်ထက် ကျော်နေသည်")
             }
-            result.add(TimeRange(startMs, endMs))
+            result.add(TimeRange(startMs, min(endMs, if (videoMs > 0L) videoMs else endMs)))
         }
         if (result.isEmpty()) return Pair(emptyList(), "Segment စာရင်း ဗလာဖြစ်နေသည်")
         return Pair(result, null)
@@ -339,6 +442,7 @@ class MainActivity : AppCompatActivity() {
         if (vUri == null) { toast("Video အရင်ရွေးပါ"); return }
         if (aUri == null || mp3Ms <= 0L) { toast("MP3 အရင်ရွေးပါ"); return }
         if (exporter.isRunning) { toast("Segment Export လုပ်နေဆဲ"); return }
+        if (matchRunning) { toast("Scene ရှာနေဆဲ၊ ခဏစောင့်ပါ"); return }
 
         if (cues.isEmpty() && srtInput.text.isNotBlank()) loadSrtText()
 
@@ -390,9 +494,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun doCancel() {
-        if (!exporter.isRunning && !recapExporter.isRunning) {
-            toast("Export မလုပ်နေပါ"); return
+        if (!exporter.isRunning && !recapExporter.isRunning && !matchRunning) {
+            toast("လုပ်နေတာ မရှိပါ"); return
         }
+        if (matchRunning) { matchCancelled = true; matchStatus = "ရပ်နေသည်..." }
         if (exporter.isRunning) { exporter.cancel(); exportStatus = "Cancel လုပ်ပြီးပါပြီ" }
         if (recapExporter.isRunning) { recapExporter.cancel(); recapStatus = "Cancel လုပ်ပြီးပါပြီ" }
         refresh()
@@ -426,50 +531,4 @@ class MainActivity : AppCompatActivity() {
                 sb.append("MP3 ကြာချိန်: ${MediaInfo.formatDuration(mp3Ms)} ($mp3Ms ms)\n")
                 val diff = srtMs - mp3Ms
                 val pct = abs(diff) * 100.0 / mp3Ms
-                sb.append("ကွာခြားချက်: $diff ms (%.2f%%)\n".format(pct))
-                if (pct > 1.0) {
-                    sb.append("⚠ ကွာခြားမှု 1% ကျော်နေသည်၊ Scale လုပ်သင့်သည်\n")
-                } else {
-                    sb.append("✓ SRT နဲ့ MP3 ကြာချိန် ကိုက်ညီသည်\n")
-                }
-            }
-        }
-        if (videoMs > 0L) {
-            sb.append("Video ကြာချိန်: ${MediaInfo.formatDuration(videoMs)}\n")
-        }
-
-        if (cues.isNotEmpty()) {
-            sb.append("\nအမှား: ${issues.size} ခု\n")
-            issues.take(15).forEach { sb.append("• Cue ${it.cueIndex}: ${it.message}\n") }
-            if (issues.size > 15) sb.append("... နောက်ထပ် ${issues.size - 15} ခု\n")
-        }
-
-        if (exportStatus.isNotEmpty()) sb.append("\n[Segment Export] $exportStatus\n")
-        if (recapStatus.isNotEmpty()) sb.append("\n[Recap Export] $recapStatus\n")
-        infoView.text = sb.toString()
-    }
-
-    // ---------- UI Helper ----------
-
-    private fun button(label: String, onClick: () -> Unit) = Button(this).apply {
-        text = label
-        isAllCaps = false
-        setOnClickListener { onClick() }
-    }
-
-    private fun numberInput(hintText: String) = EditText(this).apply {
-        hint = hintText
-        inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-    }
-
-    private fun title(label: String) = TextView(this).apply {
-        text = label
-        textSize = 20f
-        setPadding(0, dp(12), 0, dp(4))
-        visibility = View.VISIBLE
-    }
-
-    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-
-    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-}
+          
