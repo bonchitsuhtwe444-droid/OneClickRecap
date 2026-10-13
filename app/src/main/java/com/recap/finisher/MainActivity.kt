@@ -2,19 +2,23 @@ package com.recap.finisher
 
 import android.net.Uri
 import android.os.Bundle
+import android.text.InputType
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import com.recap.finisher.export.SegmentExporter
 import com.recap.finisher.media.MediaInfo
 import com.recap.finisher.subtitle.SrtCue
 import com.recap.finisher.subtitle.SrtIssue
 import com.recap.finisher.subtitle.SrtParser
 import com.recap.finisher.subtitle.SrtTimeTools
+import java.io.File
 import kotlin.math.abs
 
 class MainActivity : AppCompatActivity() {
@@ -26,8 +30,15 @@ class MainActivity : AppCompatActivity() {
     private var videoName = "-"
     private var mp3Ms = 0L
     private var videoMs = 0L
+    private var videoUri: Uri? = null
+
+    private var exportStatus = ""
+    private var segmentFile: File? = null
 
     private lateinit var infoView: TextView
+    private lateinit var startInput: EditText
+    private lateinit var endInput: EditText
+    private lateinit var exporter: SegmentExporter
 
     private val pickSrt =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -47,6 +58,7 @@ class MainActivity : AppCompatActivity() {
     private val pickVideo =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) {
+                videoUri = uri
                 videoName = MediaInfo.displayName(this, uri)
                 videoMs = MediaInfo.durationMs(this, uri)
                 if (videoMs == 0L) toast("Video Duration ဖတ်မရပါ")
@@ -61,8 +73,16 @@ class MainActivity : AppCompatActivity() {
             if (uri != null) writeSrt(uri)
         }
 
+    private val saveMp4 =
+        registerForActivityResult(
+            ActivityResultContracts.CreateDocument("video/mp4")
+        ) { uri ->
+            if (uri != null) copySegmentTo(uri)
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        exporter = SegmentExporter(this)
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -81,6 +101,15 @@ class MainActivity : AppCompatActivity() {
         root.addView(button("+100 ms ရွှေ့") { doShift(100) })
         root.addView(button("ပြင်ပြီး SRT သိမ်း") { doSave() })
 
+        root.addView(title("Video ဖြတ်ရန် (စမ်းသပ်)"))
+        startInput = numberInput("Start (စက္ကန့်) ဥပမာ 10")
+        endInput = numberInput("End (စက္ကန့်) ဥပမာ 25")
+        root.addView(startInput)
+        root.addView(endInput)
+        root.addView(button("Segment ဖြတ်ထုတ်") { doExport() })
+        root.addView(button("Export ရပ်မယ် (Cancel)") { doCancel() })
+        root.addView(button("ဖြတ်ပြီးဖိုင်ကို MP4 အဖြစ်သိမ်း") { doSaveSegment() })
+
         infoView = TextView(this).apply {
             textSize = 14f
             setPadding(0, dp(16), 0, 0)
@@ -90,6 +119,11 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(ScrollView(this).apply { addView(root) })
         refresh()
+    }
+
+    override fun onDestroy() {
+        if (exporter.isRunning) exporter.cancel()
+        super.onDestroy()
     }
 
     // ---------- SRT ဖတ်ခြင်း ----------
@@ -154,6 +188,71 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // ---------- Video Segment ဖြတ်ခြင်း ----------
+
+    private fun doExport() {
+        val uri = videoUri
+        if (uri == null) { toast("Video အရင်ရွေးပါ"); return }
+
+        val startSec = startInput.text.toString().toDoubleOrNull()
+        val endSec = endInput.text.toString().toDoubleOrNull()
+        if (startSec == null || endSec == null) { toast("Start/End ကို ဂဏန်းနဲ့ ရိုက်ပါ"); return }
+        if (startSec < 0 || endSec <= startSec) { toast("End က Start ထက်ကြီးရမယ်"); return }
+
+        val startMs = (startSec * 1000).toLong()
+        val endMs = (endSec * 1000).toLong()
+        if (videoMs > 0L && endMs > videoMs) {
+            toast("End က Video ကြာချိန် (${videoMs / 1000} စက္ကန့်) ထက်မကျော်ရ")
+            return
+        }
+
+        val out = File(cacheDir, "segment.mp4")
+        segmentFile = null
+        exportStatus = "စတင်နေသည်..."
+        refresh()
+
+        exporter.export(
+            videoUri = uri,
+            startMs = startMs,
+            endMs = endMs,
+            output = out,
+            onProgress = { p ->
+                exportStatus = "Export လုပ်နေသည်: $p%"
+                refresh()
+            },
+            onFinished = { ok, msg ->
+                exportStatus = msg
+                if (ok) segmentFile = out
+                refresh()
+            }
+        )
+    }
+
+    private fun doCancel() {
+        if (!exporter.isRunning) { toast("Export မလုပ်နေပါ"); return }
+        exporter.cancel()
+        exportStatus = "Cancel လုပ်ပြီးပါပြီ"
+        refresh()
+    }
+
+    private fun doSaveSegment() {
+        val f = segmentFile
+        if (f == null || !f.exists()) { toast("ဖြတ်ပြီးဖိုင် မရှိသေးပါ"); return }
+        saveMp4.launch("segment.mp4")
+    }
+
+    private fun copySegmentTo(uri: Uri) {
+        val f = segmentFile ?: return
+        try {
+            contentResolver.openOutputStream(uri)?.use { out ->
+                f.inputStream().use { it.copyTo(out) }
+            }
+            toast("MP4 သိမ်းပြီးပါပြီ")
+        } catch (e: Exception) {
+            toast("သိမ်းရာတွင် Error: ${e.message}")
+        }
+    }
+
     // ---------- မျက်နှာပြင် ပြခြင်း ----------
 
     private fun refresh() {
@@ -187,6 +286,10 @@ class MainActivity : AppCompatActivity() {
             issues.take(15).forEach { sb.append("• Cue ${it.cueIndex}: ${it.message}\n") }
             if (issues.size > 15) sb.append("... နောက်ထပ် ${issues.size - 15} ခု\n")
         }
+
+        if (exportStatus.isNotEmpty()) {
+            sb.append("\n[Segment Export] $exportStatus\n")
+        }
         infoView.text = sb.toString()
     }
 
@@ -196,6 +299,11 @@ class MainActivity : AppCompatActivity() {
         text = label
         isAllCaps = false
         setOnClickListener { onClick() }
+    }
+
+    private fun numberInput(hintText: String) = EditText(this).apply {
+        hint = hintText
+        inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
     }
 
     private fun title(label: String) = TextView(this).apply {
