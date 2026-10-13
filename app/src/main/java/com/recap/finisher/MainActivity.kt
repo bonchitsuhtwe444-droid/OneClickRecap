@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.text.InputType
 import android.view.View
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -12,6 +13,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import com.recap.finisher.export.BurnIn
 import com.recap.finisher.export.RecapExporter
 import com.recap.finisher.export.SegmentExporter
 import com.recap.finisher.export.TimeRange
@@ -20,8 +22,10 @@ import com.recap.finisher.subtitle.SrtCue
 import com.recap.finisher.subtitle.SrtIssue
 import com.recap.finisher.subtitle.SrtParser
 import com.recap.finisher.subtitle.SrtTimeTools
+import com.recap.finisher.subtitle.VideoSize
 import java.io.File
 import kotlin.math.abs
+import kotlin.math.min
 
 class MainActivity : AppCompatActivity() {
 
@@ -45,6 +49,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var startInput: EditText
     private lateinit var endInput: EditText
     private lateinit var rangesInput: EditText
+    private lateinit var burnCheck: CheckBox
     private lateinit var exporter: SegmentExporter
     private lateinit var recapExporter: RecapExporter
 
@@ -121,7 +126,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(button("Segment ဖြတ်ထုတ်") { doExport() })
         root.addView(button("ဖြတ်ပြီးဖိုင်ကို MP4 အဖြစ်သိမ်း") { doSaveSegment() })
 
-        root.addView(title("Segment များပေါင်း + MP3 အသံ"))
+        root.addView(title("Segment များပေါင်း + MP3 + စာတန်း"))
         rangesInput = EditText(this).apply {
             hint = "တစ်ကြောင်းကို Segment တစ်ခု (စက္ကန့်)\nဥပမာ\n5-12\n40-48.5\n100-110"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
@@ -129,6 +134,8 @@ class MainActivity : AppCompatActivity() {
             gravity = android.view.Gravity.TOP
         }
         root.addView(rangesInput)
+        burnCheck = CheckBox(this).apply { text = "စာတန်း (SRT) ကို Video ပေါ် Burn-in လုပ်မယ်" }
+        root.addView(burnCheck)
         root.addView(button("ပေါင်း + MP3 ထည့်ပြီး Export") { doRecap() })
         root.addView(button("ပေါင်းပြီး MP4 ကို သိမ်း") { doSaveRecap() })
 
@@ -261,9 +268,8 @@ class MainActivity : AppCompatActivity() {
         saveMp4.launch("segment.mp4")
     }
 
-    // ---------- Segment များပေါင်း + MP3 ----------
+    // ---------- Segment များပေါင်း + MP3 + စာတန်း ----------
 
-    /** "5-12" သို့မဟုတ် "5 12" စာကြောင်းများကို TimeRange စာရင်းအဖြစ်ပြောင်း */
     private fun parseRanges(text: String): Pair<List<TimeRange>, String?> {
         val result = mutableListOf<TimeRange>()
         val lines = text.lines().map { it.trim() }.filter { it.isNotEmpty() }
@@ -288,6 +294,17 @@ class MainActivity : AppCompatActivity() {
         return Pair(result, null)
     }
 
+    private fun buildBurnIn(vUri: Uri): BurnIn? {
+        if (!burnCheck.isChecked) return null
+        if (cues.isEmpty()) { toast("Burn-in အတွက် SRT အရင်ရွေးပါ"); return null }
+        val size = VideoSize.read(this, vUri)
+        if (size == null) { toast("Video အရွယ်အစား ဖတ်မရပါ"); return null }
+        // Bitmap ကို အကျယ် 1280 အောက် ကန့်သတ် (RAM သက်သာ၊ အချိုးတူ)
+        val w = min(size.first, 1280)
+        val h = (w.toLong() * size.second / size.first).toInt().coerceAtLeast(2)
+        return BurnIn(cues, w, h)
+    }
+
     private fun doRecap() {
         val vUri = videoUri
         val aUri = mp3Uri
@@ -298,6 +315,12 @@ class MainActivity : AppCompatActivity() {
         val (ranges, error) = parseRanges(rangesInput.text.toString())
         if (error != null) { toast(error); return }
 
+        if (burnCheck.isChecked && cues.isEmpty()) {
+            toast("Burn-in အတွက် SRT အရင်ရွေးပါ"); return
+        }
+        val burnIn = buildBurnIn(vUri)
+        if (burnCheck.isChecked && burnIn == null) return
+
         val totalMs = ranges.sumOf { it.durationMs }
         val warn = when {
             totalMs + 1000 < mp3Ms ->
@@ -306,10 +329,11 @@ class MainActivity : AppCompatActivity() {
                 "\n⚠ Video စုစုပေါင်း (${totalMs / 1000}s) က MP3 (${mp3Ms / 1000}s) ထက်ရှည်နေသည်၊ အဆုံးပိုင်း အသံမရှိမယ်"
             else -> ""
         }
+        val burnNote = if (burnIn != null) "\n[စာတန်း Burn-in ပါမည်၊ Re-encode လုပ်ရသဖြင့် ပိုကြာမည်]" else ""
 
         val out = File(cacheDir, "recap.mp4")
         recapFile = null
-        recapStatus = "စတင်နေသည်... Segment ${ranges.size} ခု၊ ${totalMs / 1000} စက္ကန့်$warn"
+        recapStatus = "စတင်နေသည်... Segment ${ranges.size} ခု၊ ${totalMs / 1000} စက္ကန့်$warn$burnNote"
         refresh()
 
         recapExporter.export(
@@ -318,12 +342,13 @@ class MainActivity : AppCompatActivity() {
             audioUri = aUri,
             audioMs = mp3Ms,
             output = out,
+            burnIn = burnIn,
             onProgress = { p ->
-                recapStatus = "Export လုပ်နေသည်: $p%$warn"
+                recapStatus = "Export လုပ်နေသည်: $p%$warn$burnNote"
                 refresh()
             },
             onFinished = { ok, msg ->
-                recapStatus = msg + warn
+                recapStatus = msg + warn + burnNote
                 if (ok) recapFile = out
                 refresh()
             }
