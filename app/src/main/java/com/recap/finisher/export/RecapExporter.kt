@@ -4,9 +4,11 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.OverlayEffect
+import androidx.media3.effect.SpeedChangeEffect
 import androidx.media3.effect.TextureOverlay
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
@@ -55,12 +57,16 @@ class RecapExporter(private val context: Context) {
             onFinished(false, "Segment စာရင်း ဗလာဖြစ်နေသည်")
             return
         }
-
         if (output.exists()) output.delete()
 
-        val totalVideoMs = ranges.sumOf { it.durationMs }
+        // Smart Match ထဲက Speed (0.5 = 2 ဆနှေး)။ မသတ်မှတ်ရင် 1.0
+        val prefs = context.getSharedPreferences("recap", Context.MODE_PRIVATE)
+        val speed = prefs.getFloat("speed", 1.0f).coerceIn(0.25f, 2.0f)
+        val slow = speed != 1.0f
 
-        // Segment တစ်ခုချင်းစီ၏ Output Timeline စတင်ချိန်
+        // Output Timeline ပေါ်က ကြာချိန် = Source ကြာချိန် / speed
+        val totalVideoMs = ranges.sumOf { (it.durationMs / speed).toLong() }
+
         var offsetMs = 0L
         val videoItems = ranges.map { r ->
             val clip = MediaItem.ClippingConfiguration.Builder()
@@ -74,15 +80,19 @@ class RecapExporter(private val context: Context) {
 
             val builder = EditedMediaItem.Builder(item).setRemoveAudio(true)
 
+            val videoEffects = mutableListOf<Effect>()
+            if (slow) videoEffects.add(SpeedChangeEffect(speed))
             if (burnIn != null) {
                 val overlay = SubtitleBitmapOverlay(
                     burnIn.cues, burnIn.frameWidth, burnIn.frameHeight, offsetMs
                 )
-                val effect = OverlayEffect(ImmutableList.of<TextureOverlay>(overlay))
-                builder.setEffects(Effects(emptyList(), listOf(effect)))
+                videoEffects.add(OverlayEffect(ImmutableList.of<TextureOverlay>(overlay)))
+            }
+            if (videoEffects.isNotEmpty()) {
+                builder.setEffects(Effects(emptyList(), videoEffects))
             }
 
-            offsetMs += r.durationMs
+            offsetMs += (r.durationMs / speed).toLong()
             builder.build()
         }
 
@@ -106,12 +116,14 @@ class RecapExporter(private val context: Context) {
             )
         ).build()
 
+        val speedNote = if (slow) " [Speed ${speed}x]" else ""
+
         val t = Transformer.Builder(context)
             .addListener(object : Transformer.Listener {
                 override fun onCompleted(composition: Composition, exportResult: ExportResult) {
                     stopPolling()
                     onProgress(100)
-                    onFinished(true, "ပြီးပါပြီ: ${output.length() / 1024} KB")
+                    onFinished(true, "ပြီးပါပြီ: ${output.length() / 1024} KB$speedNote")
                 }
 
                 override fun onError(
