@@ -6,18 +6,27 @@ import android.os.Handler
 import android.os.Looper
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.OverlayEffect
+import androidx.media3.effect.TextureOverlay
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.EditedMediaItemSequence
+import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
+import com.google.common.collect.ImmutableList
+import com.recap.finisher.subtitle.SrtCue
+import com.recap.finisher.subtitle.SubtitleBitmapOverlay
 import java.io.File
 
 data class TimeRange(val startMs: Long, val endMs: Long) {
     val durationMs: Long get() = endMs - startMs
 }
+
+/** စာတန်း Burn-in လုပ်ရန် လိုအပ်သောအချက်အလက် */
+data class BurnIn(val cues: List<SrtCue>, val frameWidth: Int, val frameHeight: Int)
 
 @androidx.annotation.OptIn(UnstableApi::class)
 class RecapExporter(private val context: Context) {
@@ -29,16 +38,13 @@ class RecapExporter(private val context: Context) {
 
     val isRunning: Boolean get() = running
 
-    /**
-     * ranges ကို အစဉ်လိုက်ဖြတ်ပေါင်း၊ မူရင်းအသံဖယ်၊ audioUri ကို အသံအဖြစ်တင်။
-     * Main thread မှ ခေါ်ရမည်။
-     */
     fun export(
         videoUri: Uri,
         ranges: List<TimeRange>,
         audioUri: Uri,
         audioMs: Long,
         output: File,
+        burnIn: BurnIn?,
         onProgress: (Int) -> Unit,
         onFinished: (success: Boolean, message: String) -> Unit
     ) {
@@ -55,7 +61,6 @@ class RecapExporter(private val context: Context) {
 
         val totalVideoMs = ranges.sumOf { it.durationMs }
 
-        // Video sequence: Segment တစ်ခုချင်းစီ၊ မူရင်းအသံဖယ်
         val videoItems = ranges.map { r ->
             val clip = MediaItem.ClippingConfiguration.Builder()
                 .setStartPositionMs(r.startMs)
@@ -70,7 +75,6 @@ class RecapExporter(private val context: Context) {
                 .build()
         }
 
-        // Audio sequence: MP3 ကို Video စုစုပေါင်းကြာချိန်ထက် မရှည်စေရ
         val audioItemBuilder = MediaItem.Builder().setUri(audioUri)
         if (audioMs > totalVideoMs) {
             audioItemBuilder.setClippingConfiguration(
@@ -84,12 +88,21 @@ class RecapExporter(private val context: Context) {
             .setRemoveVideo(true)
             .build()
 
-        val composition = Composition.Builder(
+        val compositionBuilder = Composition.Builder(
             listOf(
                 EditedMediaItemSequence(videoItems),
                 EditedMediaItemSequence(listOf(audioItem))
             )
-        ).build()
+        )
+
+        // စာတန်း Burn-in: Composition အဆင့်မှာ Effect တပ်ရင် Output Timeline အတိုင်း ကိုက်မယ်
+        if (burnIn != null) {
+            val overlay = SubtitleBitmapOverlay(burnIn.cues, burnIn.frameWidth, burnIn.frameHeight)
+            val overlayEffect = OverlayEffect(ImmutableList.of<TextureOverlay>(overlay))
+            compositionBuilder.setEffects(Effects(emptyList(), listOf(overlayEffect)))
+        }
+
+        val composition = compositionBuilder.build()
 
         val t = Transformer.Builder(context)
             .addListener(object : Transformer.Listener {
