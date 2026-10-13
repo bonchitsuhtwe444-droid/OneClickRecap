@@ -5,7 +5,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
-import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
@@ -53,7 +52,6 @@ class MainActivity : AppCompatActivity() {
     private var recapFile: File? = null
     private var savingRecap = false
 
-    // Scene Matching
     private var scenes: List<Scene> = emptyList()
     private var scenesFor: Uri? = null
     @Volatile private var matchCancelled = false
@@ -136,7 +134,6 @@ class MainActivity : AppCompatActivity() {
         root.addView(srtInput)
         root.addView(button("1. SRT စာသားကို အသုံးပြု") { loadSrtText() })
         root.addView(button("(ဒါမှမဟုတ်) SRT ဖိုင်ရွေး") { pickSrt.launch(arrayOf("*/*")) })
-
         root.addView(button("2. TTS MP3 ရွေး") { pickMp3.launch(arrayOf("audio/*")) })
         root.addView(button("3. Movie Video ရွေး") { pickVideo.launch(arrayOf("video/*")) })
 
@@ -168,7 +165,6 @@ class MainActivity : AppCompatActivity() {
         root.addView(burnCheck)
         root.addView(button("ပေါင်း + MP3 ထည့်ပြီး Export") { doRecap() })
         root.addView(button("ပေါင်းပြီး MP4 ကို သိမ်း") { doSaveRecap() })
-
         root.addView(button("Export/Scene ရှာတာ အားလုံး ရပ်မယ် (Cancel)") { doCancel() })
 
         infoView = TextView(this).apply {
@@ -189,7 +185,7 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    // ---------- SRT ဖတ်ခြင်း ----------
+    // ---------- SRT ----------
 
     private fun loadSrt(uri: Uri) {
         try {
@@ -215,8 +211,6 @@ class MainActivity : AppCompatActivity() {
         srtName = "(Paste လုပ်ထားသော စာသား)"
         refresh()
     }
-
-    // ---------- Timing ပြင်ခြင်း ----------
 
     private fun requireCues(): Boolean {
         if (cues.isEmpty() && srtInput.text.isNotBlank()) loadSrtText()
@@ -262,7 +256,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ---------- Segment တစ်ခုဖြတ်ခြင်း ----------
+    // ---------- Segment တစ်ခုဖြတ် ----------
 
     private fun doExport() {
         val uri = videoUri
@@ -321,9 +315,8 @@ class MainActivity : AppCompatActivity() {
         if (matchRunning) { toast("Scene ရှာနေဆဲ"); return }
         if (exporter.isRunning || recapExporter.isRunning) { toast("Export လုပ်နေဆဲ"); return }
 
-        // ဒီ Video အတွက် Scene ရှာပြီးသားဆိုရင် ပြန်မရှာဘဲ ပြန်သုံး
         if (scenesFor == vUri && scenes.isNotEmpty()) {
-            applyMatch(scenes)
+            applyMatch(scenes, "")
             return
         }
 
@@ -350,30 +343,34 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                 )
-            } catch (e: Exception) {
-                err = e.message ?: e.javaClass.simpleName
+            } catch (ex: Exception) {
+                err = ex.message ?: ex.javaClass.simpleName
             }
-            val f = found
-            val e = err
+            val resultScenes = found
+            val resultErr = err
             runOnUiThread {
                 matchRunning = false
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 val secs = (System.currentTimeMillis() - startTime) / 1000
-                when {
-                    e != null -> { matchStatus = "Error: $e"; refresh() }
-                    matchCancelled -> { matchStatus = "Cancel လုပ်ပြီးပါပြီ"; refresh() }
-                    f.isNullOrEmpty() -> { matchStatus = "Scene မတွေ့ပါ"; refresh() }
-                    else -> {
-                        scenes = f
-                        scenesFor = vUri
-                        applyMatch(f, "(Scene ရှာချိန် ${secs}s)")
-                    }
+                if (resultErr != null) {
+                    matchStatus = "Error: $resultErr"
+                    refresh()
+                } else if (matchCancelled) {
+                    matchStatus = "Cancel လုပ်ပြီးပါပြီ"
+                    refresh()
+                } else if (resultScenes.isNullOrEmpty()) {
+                    matchStatus = "Scene မတွေ့ပါ"
+                    refresh()
+                } else {
+                    scenes = resultScenes
+                    scenesFor = vUri
+                    applyMatch(resultScenes, "(Scene ရှာချိန် ${secs}s)")
                 }
             }
         }.start()
     }
 
-    private fun applyMatch(list: List<Scene>, extra: String = "") {
+    private fun applyMatch(list: List<Scene>, extra: String) {
         val r = SceneMatcher.match(cues, list, mp3Ms, videoMs)
         if (r.groups.isEmpty()) {
             matchStatus = r.warnings.joinToString("\n")
@@ -420,7 +417,8 @@ class MainActivity : AppCompatActivity() {
             if (videoMs > 0L && endMs > videoMs + 50) {
                 return Pair(emptyList(), "စာကြောင်း ${i + 1}: Video ကြာချိန်ထက် ကျော်နေသည်")
             }
-            result.add(TimeRange(startMs, min(endMs, if (videoMs > 0L) videoMs else endMs)))
+            val clippedEnd = if (videoMs > 0L) min(endMs, videoMs) else endMs
+            result.add(TimeRange(startMs, clippedEnd))
         }
         if (result.isEmpty()) return Pair(emptyList(), "Segment စာရင်း ဗလာဖြစ်နေသည်")
         return Pair(result, null)
@@ -455,12 +453,12 @@ class MainActivity : AppCompatActivity() {
         val totalMs = ranges.sumOf { it.durationMs }
         val warn = when {
             totalMs + 1000 < mp3Ms ->
-                "\n⚠ Video စုစုပေါင်း (${totalMs / 1000}s) က MP3 (${mp3Ms / 1000}s) ထက်တိုနေသည်၊ အသံအဆုံးပိုင်း ပါချင်မှ ပါမယ်"
+                "\n⚠ Video စုစုပေါင်း (${totalMs / 1000}s) က MP3 (${mp3Ms / 1000}s) ထက်တိုနေသည်"
             totalMs > mp3Ms + 1000 ->
-                "\n⚠ Video စုစုပေါင်း (${totalMs / 1000}s) က MP3 (${mp3Ms / 1000}s) ထက်ရှည်နေသည်၊ အဆုံးပိုင်း အသံမရှိမယ်"
+                "\n⚠ Video စုစုပေါင်း (${totalMs / 1000}s) က MP3 (${mp3Ms / 1000}s) ထက်ရှည်နေသည်"
             else -> ""
         }
-        val burnNote = if (burnIn != null) "\n[စာတန်း Burn-in ပါမည်၊ Re-encode လုပ်ရသဖြင့် ပိုကြာမည်]" else ""
+        val burnNote = if (burnIn != null) "\n[စာတန်း Burn-in ပါမည်၊ ပိုကြာမည်]" else ""
 
         val out = File(cacheDir, "recap.mp4")
         recapFile = null
@@ -495,7 +493,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun doCancel() {
         if (!exporter.isRunning && !recapExporter.isRunning && !matchRunning) {
-            toast("လုပ်နေတာ မရှိပါ"); return
+            toast("လုပ်နေတာ မရှိပါ")
+            return
         }
         if (matchRunning) { matchCancelled = true; matchStatus = "ရပ်နေသည်..." }
         if (exporter.isRunning) { exporter.cancel(); exportStatus = "Cancel လုပ်ပြီးပါပြီ" }
@@ -515,7 +514,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ---------- မျက်နှာပြင် ပြခြင်း ----------
+    // ---------- မျက်နှာပြင် ----------
 
     private fun refresh() {
         val sb = StringBuilder()
@@ -531,4 +530,5 @@ class MainActivity : AppCompatActivity() {
                 sb.append("MP3 ကြာချိန်: ${MediaInfo.formatDuration(mp3Ms)} ($mp3Ms ms)\n")
                 val diff = srtMs - mp3Ms
                 val pct = abs(diff) * 100.0 / mp3Ms
-          
+                sb.append("ကွာခြားချက်: $diff ms (%.2f%%)\n".format(pct))
+                if (pc
