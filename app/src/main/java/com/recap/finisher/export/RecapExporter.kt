@@ -25,7 +25,6 @@ data class TimeRange(val startMs: Long, val endMs: Long) {
     val durationMs: Long get() = endMs - startMs
 }
 
-/** စာတန်း Burn-in လုပ်ရန် လိုအပ်သောအချက်အလက် */
 data class BurnIn(val cues: List<SrtCue>, val frameWidth: Int, val frameHeight: Int)
 
 @androidx.annotation.OptIn(UnstableApi::class)
@@ -61,6 +60,8 @@ class RecapExporter(private val context: Context) {
 
         val totalVideoMs = ranges.sumOf { it.durationMs }
 
+        // Segment တစ်ခုချင်းစီ၏ Output Timeline စတင်ချိန်
+        var offsetMs = 0L
         val videoItems = ranges.map { r ->
             val clip = MediaItem.ClippingConfiguration.Builder()
                 .setStartPositionMs(r.startMs)
@@ -70,9 +71,19 @@ class RecapExporter(private val context: Context) {
                 .setUri(videoUri)
                 .setClippingConfiguration(clip)
                 .build()
-            EditedMediaItem.Builder(item)
-                .setRemoveAudio(true)
-                .build()
+
+            val builder = EditedMediaItem.Builder(item).setRemoveAudio(true)
+
+            if (burnIn != null) {
+                val overlay = SubtitleBitmapOverlay(
+                    burnIn.cues, burnIn.frameWidth, burnIn.frameHeight, offsetMs
+                )
+                val effect = OverlayEffect(ImmutableList.of<TextureOverlay>(overlay))
+                builder.setEffects(Effects(emptyList(), listOf(effect)))
+            }
+
+            offsetMs += r.durationMs
+            builder.build()
         }
 
         val audioItemBuilder = MediaItem.Builder().setUri(audioUri)
@@ -88,21 +99,12 @@ class RecapExporter(private val context: Context) {
             .setRemoveVideo(true)
             .build()
 
-        val compositionBuilder = Composition.Builder(
+        val composition = Composition.Builder(
             listOf(
                 EditedMediaItemSequence(videoItems),
                 EditedMediaItemSequence(listOf(audioItem))
             )
-        )
-
-        // စာတန်း Burn-in: Composition အဆင့်မှာ Effect တပ်ရင် Output Timeline အတိုင်း ကိုက်မယ်
-        if (burnIn != null) {
-            val overlay = SubtitleBitmapOverlay(burnIn.cues, burnIn.frameWidth, burnIn.frameHeight)
-            val overlayEffect = OverlayEffect(ImmutableList.of<TextureOverlay>(overlay))
-            compositionBuilder.setEffects(Effects(emptyList(), listOf(overlayEffect)))
-        }
-
-        val composition = compositionBuilder.build()
+        ).build()
 
         val t = Transformer.Builder(context)
             .addListener(object : Transformer.Listener {
