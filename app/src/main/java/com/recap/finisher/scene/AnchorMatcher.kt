@@ -6,7 +6,6 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
-/** narrMs = Narration (TTS) အချိန်၊ movieMs = ထိုအဖြစ်အပျက် Movie ထဲမှာ ဖြစ်တဲ့အချိန် */
 data class Anchor(val narrMs: Long, val movieMs: Long)
 
 data class AnchorResult(val ranges: List<TimeRange>, val warnings: List<String>)
@@ -27,23 +26,24 @@ object AnchorMatcher {
         return a.last().movieMs
     }
 
+    /** speed: 0.5 = 2 ဆနှေး (Movie ကနေ Narration ရဲ့ ထက်ဝက်ပဲ ယူ) */
     fun match(
         cues: List<SrtCue>,
         scenes: List<Scene>,
         narrationMs: Long,
         movieMs: Long,
         userAnchors: List<Anchor>,
+        speed: Double = 1.0,
         minGroupMs: Long = 3000L
     ): AnchorResult {
         val warnings = mutableListOf<String>()
         if (cues.isEmpty() || scenes.isEmpty()) {
             return AnchorResult(emptyList(), listOf("SRT သို့မဟုတ် Scene မရှိပါ"))
         }
-        if (movieMs < narrationMs) {
-            return AnchorResult(emptyList(), listOf("Video က MP3 ထက်တိုနေသည်"))
+        if (movieMs < (narrationMs * speed).toLong()) {
+            return AnchorResult(emptyList(), listOf("Video က လိုအပ်တာထက် တိုနေသည်"))
         }
 
-        // Anchor စာရင်း (အစ/အဆုံး ထည့်၊ Movie အချိန် အစဉ်ပြန်ကျော့တာ ဖယ်)
         val all = mutableListOf(Anchor(0L, 0L))
         for (u in userAnchors.sortedBy { it.narrMs }) {
             if (u.narrMs <= 0L || u.narrMs >= narrationMs) continue
@@ -55,7 +55,6 @@ object AnchorMatcher {
         }
         all.add(Anchor(narrationMs, movieMs))
 
-        // Cue များကို အုပ်စုဖွဲ့
         val sc = scenes.sortedBy { it.startMs }
         val sorted = cues.sortedBy { it.startMs }
         val ends = mutableListOf<Long>()
@@ -80,22 +79,23 @@ object AnchorMatcher {
             val d = nEnd - nStart
             if (d <= 0L) continue
 
+            val srcLen = (d * speed).toLong()
             val target = interpolate(all, nStart)
-            val latest = max(movieMs - (narrationMs - nStart), cursor)
+            val remainSrc = ((narrationMs - nStart) * speed).toLong()
+            val latest = max(movieMs - remainSrc, cursor)
             var begin = target.coerceIn(cursor, latest)
 
-            // အနီးဆုံး Scene အစကို ညှိ (၂ စက္ကန့်အတွင်း)
             val snap = sc.map { it.startMs }
                 .filter { it in cursor..latest }
                 .minByOrNull { abs(it - begin) }
             if (snap != null && abs(snap - begin) <= 2000L) begin = snap
 
-            val end = min(begin + d, movieMs)
+            val end = min(begin + srcLen, movieMs)
             if (end <= begin) {
                 warnings.add("အုပ်စု ${gi + 1}: Footage မကျန်တော့ပါ")
                 continue
             }
-            if (end - begin < d) warnings.add("အုပ်စု ${gi + 1}: Footage မလောက်၍ Clip တိုသွားသည်")
+            if (end - begin < srcLen) warnings.add("အုပ်စု ${gi + 1}: Footage မလောက်၍ Clip တိုသွားသည်")
             if (abs(begin - target) > 5000L) {
                 warnings.add("အုပ်စု ${gi + 1}: Anchor နဲ့ ${abs(begin - target) / 1000}s ကွာသည်")
             }
