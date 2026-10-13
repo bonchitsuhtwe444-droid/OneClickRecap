@@ -7,11 +7,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 
 object GeminiAnchors {
 
-    /** Background thread မှ ခေါ်ရမည်။ Error ဆို Exception ပစ်မည်။ */
+    /** Background thread မှ ခေါ်ရမည်။ Timeout ဆို တစ်ခါ ပြန်ကြိုးစားမည်။ */
     fun request(
         apiKey: String,
         model: String,
@@ -20,6 +21,24 @@ object GeminiAnchors {
         narrationMs: Long,
         movieMs: Long
     ): List<Anchor> {
+        val body = buildBody(cues, scenes, narrationMs, movieMs)
+        var last: Exception? = null
+        for (attempt in 1..2) {
+            try {
+                return send(apiKey, model, body)
+            } catch (e: SocketTimeoutException) {
+                last = Exception("timeout (ကြိုးစားမှု $attempt/2)")
+            }
+        }
+        throw last ?: Exception("timeout")
+    }
+
+    private fun buildBody(
+        cues: List<SrtCue>,
+        scenes: List<Scene>,
+        narrationMs: Long,
+        movieMs: Long
+    ): String {
         val parts = JSONArray()
 
         val script = cues.sortedBy { it.startMs }
@@ -44,19 +63,22 @@ object GeminiAnchors {
             )
         }
 
-        val body = JSONObject()
+        return JSONObject()
             .put("contents", JSONArray().put(JSONObject().put("parts", parts)))
             .put("generationConfig", JSONObject().put("responseMimeType", "application/json"))
+            .toString()
+    }
 
+    private fun send(apiKey: String, model: String, body: String): List<Anchor> {
         val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey")
         val conn = url.openConnection() as HttpURLConnection
         try {
             conn.requestMethod = "POST"
-            conn.connectTimeout = 30000
-            conn.readTimeout = 120000
+            conn.connectTimeout = 60000
+            conn.readTimeout = 300000
             conn.doOutput = true
             conn.setRequestProperty("Content-Type", "application/json")
-            conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
 
             val code = conn.responseCode
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
