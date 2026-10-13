@@ -3,6 +3,7 @@ package com.recap.finisher
 import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
+import android.view.Gravity
 import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
@@ -49,6 +50,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var startInput: EditText
     private lateinit var endInput: EditText
     private lateinit var rangesInput: EditText
+    private lateinit var srtInput: EditText
     private lateinit var burnCheck: CheckBox
     private lateinit var exporter: SegmentExporter
     private lateinit var recapExporter: RecapExporter
@@ -107,7 +109,19 @@ class MainActivity : AppCompatActivity() {
         }
 
         root.addView(title("One-Click Recap"))
-        root.addView(button("1. SRT ဖိုင်ရွေး") { pickSrt.launch(arrayOf("*/*")) })
+
+        // SRT စာသား Paste ကွက်
+        srtInput = EditText(this).apply {
+            hint = "ဒီမှာ SRT စာသား Paste လုပ်ပါ\n\n1\n00:00:01,000 --> 00:00:04,000\nစာတန်းစာသား"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 5
+            maxLines = 10
+            gravity = Gravity.TOP
+        }
+        root.addView(srtInput)
+        root.addView(button("1. SRT စာသားကို အသုံးပြု") { loadSrtText() })
+        root.addView(button("(ဒါမှမဟုတ်) SRT ဖိုင်ရွေး") { pickSrt.launch(arrayOf("*/*")) })
+
         root.addView(button("2. TTS MP3 ရွေး") { pickMp3.launch(arrayOf("audio/*")) })
         root.addView(button("3. Movie Video ရွေး") { pickVideo.launch(arrayOf("video/*")) })
 
@@ -131,7 +145,7 @@ class MainActivity : AppCompatActivity() {
             hint = "တစ်ကြောင်းကို Segment တစ်ခု (စက္ကန့်)\nဥပမာ\n5-12\n40-48.5\n100-110"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             minLines = 4
-            gravity = android.view.Gravity.TOP
+            gravity = Gravity.TOP
         }
         root.addView(rangesInput)
         burnCheck = CheckBox(this).apply { text = "စာတန်း (SRT) ကို Video ပေါ် Burn-in လုပ်မယ်" }
@@ -175,10 +189,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun loadSrtText() {
+        val raw = srtInput.text.toString()
+        if (raw.isBlank()) { toast("SRT စာသား အရင်ထည့်ပါ"); return }
+        val result = SrtParser.parse(raw)
+        cues = result.cues
+        issues = result.issues
+        srtName = "(Paste လုပ်ထားသော စာသား)"
+        refresh()
+    }
+
     // ---------- Timing ပြင်ခြင်း ----------
 
     private fun requireCues(): Boolean {
-        if (cues.isEmpty()) { toast("SRT အရင်ရွေးပါ"); return false }
+        if (cues.isEmpty()) { toast("SRT အရင်ထည့်ပါ"); return false }
         return true
     }
 
@@ -296,10 +320,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun buildBurnIn(vUri: Uri): BurnIn? {
         if (!burnCheck.isChecked) return null
-        if (cues.isEmpty()) { toast("Burn-in အတွက် SRT အရင်ရွေးပါ"); return null }
+        if (cues.isEmpty()) { toast("Burn-in အတွက် SRT အရင်ထည့်ပါ"); return null }
         val size = VideoSize.read(this, vUri)
         if (size == null) { toast("Video အရွယ်အစား ဖတ်မရပါ"); return null }
-        // Bitmap ကို အကျယ် 1280 အောက် ကန့်သတ် (RAM သက်သာ၊ အချိုးတူ)
         val w = min(size.first, 1280)
         val h = (w.toLong() * size.second / size.first).toInt().coerceAtLeast(2)
         return BurnIn(cues, w, h)
@@ -312,12 +335,12 @@ class MainActivity : AppCompatActivity() {
         if (aUri == null || mp3Ms <= 0L) { toast("MP3 အရင်ရွေးပါ"); return }
         if (exporter.isRunning) { toast("Segment Export လုပ်နေဆဲ"); return }
 
+        // Paste လုပ်ထားပြီး "အသုံးပြု" မနှိပ်ရသေးရင် အလိုအလျောက် ဖတ်
+        if (cues.isEmpty() && srtInput.text.isNotBlank()) loadSrtText()
+
         val (ranges, error) = parseRanges(rangesInput.text.toString())
         if (error != null) { toast(error); return }
 
-        if (burnCheck.isChecked && cues.isEmpty()) {
-            toast("Burn-in အတွက် SRT အရင်ရွေးပါ"); return
-        }
         val burnIn = buildBurnIn(vUri)
         if (burnCheck.isChecked && burnIn == null) return
 
@@ -432,6 +455,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun numberInput(hintText: String) = EditText(this).apply {
         hint = hintText
+        inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_NUMBER_FLAG_DECIMAL
         inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
     }
 
