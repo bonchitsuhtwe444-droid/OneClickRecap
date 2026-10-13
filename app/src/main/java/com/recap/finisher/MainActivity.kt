@@ -531,4 +531,51 @@ class MainActivity : AppCompatActivity() {
                 val diff = srtMs - mp3Ms
                 val pct = abs(diff) * 100.0 / mp3Ms
                 sb.append("ကွာခြားချက်: $diff ms (%.2f%%)\n".format(pct))
-                if (pc
+                                if (pct > 1.0) {
+                    sb.append("⚠ ကွာခြားမှု 1% ကျော်နေသည်၊ Scale လုပ်သင့်သည်\n")
+                } else {
+                    sb.append("✓ SRT နဲ့ MP3 ကြာချိန် ကိုက်ညီသည်\n")
+                }
+            }
+        }
+        if (videoMs > 0L) {
+            sb.append("Video ကြာချိန်: ${MediaInfo.formatDuration(videoMs)}\n")
+        }
+
+        if (cues.isNotEmpty()) {
+            sb.append("\nအမှား: ${issues.size} ခု\n")
+            issues.take(15).forEach { sb.append("• Cue ${it.cueIndex}: ${it.message}\n") }
+            if (issues.size > 15) sb.append("... နောက်ထပ် ${issues.size - 15} ခု\n")
+        }
+
+        if (matchStatus.isNotEmpty()) sb.append("\n[Scene Match] $matchStatus\n")
+        if (exportStatus.isNotEmpty()) sb.append("\n[Segment Export] $exportStatus\n")
+        if (recapStatus.isNotEmpty()) sb.append("\n[Recap Export] $recapStatus\n")
+        infoView.text = sb.toString()
+    }
+
+    // ---------- UI Helper ----------
+
+    private fun button(label: String, onClick: () -> Unit) = Button(this).apply {
+        text = label
+        isAllCaps = false
+        setOnClickListener { onClick() }
+    }
+
+    private fun numberInput(hintText: String) = EditText(this).apply {
+        hint = hintText
+        inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+    }
+
+    private fun title(label: String) = TextView(this).apply {
+        text = label
+        textSize = 20f
+        setPadding(0, dp(12), 0, dp(4))
+    }
+
+    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+}
+
+// ===== END OF FILE =====
