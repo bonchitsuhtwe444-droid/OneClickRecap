@@ -35,6 +35,7 @@ class SceneActivity : AppCompatActivity() {
 
     private lateinit var srtInput: EditText
     private lateinit var anchorInput: EditText
+    private lateinit var speedInput: EditText
     private lateinit var keyInput: EditText
     private lateinit var modelInput: EditText
     private lateinit var resultInput: EditText
@@ -58,9 +59,15 @@ class SceneActivity : AppCompatActivity() {
         root.addView(btn("TTS MP3 ရွေး") { pickMp3.launch(arrayOf("audio/*")) })
         root.addView(btn("Movie Video ရွေး") { pickVideo.launch(arrayOf("video/*")) })
 
-        anchorInput = edit("Anchor တစ်ကြောင်းစီ: Narration စက္ကန့်-Movie စက္ကန့်\nဥပမာ\n45-90\n120-300", 4, true)
+        speedInput = edit("Speed: 0.5 = 2 ဆနှေး၊ 1 = ပုံမှန်", 1, false).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            setText(prefs.getFloat("speed", 0.5f).toString())
+        }
+        root.addView(speedInput)
+
+        anchorInput = edit("Anchor တစ်ကြောင်းစီ: Narration စက္ကန့်-Movie စက္ကန့်\nဗလာထားရင် Offline အလိုအလျောက် (အချိန်အချိုး)", 4, true)
         root.addView(anchorInput)
-        root.addView(btn("Anchor နဲ့ ရွေး (Offline)") { generate() })
+        root.addView(btn("Anchor နဲ့ ရွေး (Offline၊ ဗလာလည်းရ)") { generate() })
 
         keyInput = edit("Gemini API Key (Optional)", 1, false).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
@@ -90,10 +97,15 @@ class SceneActivity : AppCompatActivity() {
 
     override fun onDestroy() { cancelled = true; super.onDestroy() }
 
-    // ---------- စစ်ဆေး ----------
+    private fun readSpeed(): Double? {
+        val s = speedInput.text.toString().trim().toDoubleOrNull()
+        if (s == null || s < 0.25 || s > 2.0) { toast("Speed က 0.25 နဲ့ 2 ကြား ထည့်ပါ"); return null }
+        return s
+    }
 
     private fun ready(): Boolean {
         if (busy) { toast("လုပ်နေဆဲ"); return false }
+        if (readSpeed() == null) return false
         val parsed = SrtParser.parse(srtInput.text.toString()).cues
         if (parsed.isEmpty()) { toast("SRT အရင်ထည့်ပါ"); return false }
         if (mp3Ms <= 0L) { toast("MP3 အရင်ရွေးပါ"); return false }
@@ -126,8 +138,6 @@ class SceneActivity : AppCompatActivity() {
         }.start()
     }
 
-    // ---------- ရွေး ----------
-
     private fun generate() {
         if (!ready()) return
         ensureScenes { runMatch() }
@@ -145,16 +155,21 @@ class SceneActivity : AppCompatActivity() {
     }
 
     private fun runMatch() {
-        val r = AnchorMatcher.match(cues, scenes, mp3Ms, videoMs, parseAnchors())
+        val speed = readSpeed() ?: return
+        // Export (RecapExporter) က ဒီတန်ဖိုးကို ဖတ်သုံးမည်
+        getSharedPreferences("recap", Context.MODE_PRIVATE).edit().putFloat("speed", speed.toFloat()).apply()
+
+        val r = AnchorMatcher.match(cues, scenes, mp3Ms, videoMs, parseAnchors(), speed)
         if (r.ranges.isEmpty()) { say(r.warnings.joinToString("\n")); return }
         resultInput.setText(r.ranges.joinToString("\n") { fmt(it.startMs) + "-" + fmt(it.endMs) })
-        val total = r.ranges.sumOf { it.durationMs } / 1000
-        val sb = StringBuilder("✓ Scene ${scenes.size} ခု၊ Segment ${r.ranges.size} ခု၊ Clip ${total}s / MP3 ${mp3Ms / 1000}s\n")
+        val srcTotal = r.ranges.sumOf { it.durationMs } / 1000
+        val outTotal = (r.ranges.sumOf { it.durationMs } / speed).toLong() / 1000
+        val sb = StringBuilder("✓ Scene ${scenes.size} ခု၊ Segment ${r.ranges.size} ခု\n")
+        sb.append("Movie ကနေ ယူတာ ${srcTotal}s → Speed ${speed}x နဲ့ ${outTotal}s၊ MP3 ${mp3Ms / 1000}s\n")
+        sb.append("Speed ကို Main App Export မှာ အလိုအလျောက်သုံးမည်။ ပုံမှန်ပြန်လုပ်ချင်ရင် Speed=1 ထည့်ပြီး ပြန်ရွေးပါ။\n")
         sb.append(if (r.warnings.isEmpty()) "သတိပေးချက် မရှိ" else "⚠ " + r.warnings.take(8).joinToString("\n• ", "\n• "))
         say(sb.toString())
     }
-
-    // ---------- Gemini ----------
 
     private fun gemini() {
         if (!ready()) return
@@ -179,8 +194,6 @@ class SceneActivity : AppCompatActivity() {
             }.start()
         }
     }
-
-    // ---------- Helper ----------
 
     private fun fmt(ms: Long) = String.format(Locale.US, "%.3f", ms / 1000.0)
     private fun say(s: String) { status.text = s }
