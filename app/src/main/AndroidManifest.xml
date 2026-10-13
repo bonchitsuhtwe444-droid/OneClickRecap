@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:label="One-Click Recap"
         android:theme="@style/Theme.AppCompat.DayNight.DarkActionBar">
@@ -15,7 +17,7 @@
 
         <activity
             android:name=".scene.SceneActivity"
-            android:label="Scene Test"
+            android:label="Smart Match"
             android:exported="false" />
     </application>
 
