@@ -31,10 +31,7 @@ object VideoSize {
     }
 }
 
-/**
- * Segment တစ်ခုချင်းစီအတွက် Overlay။ offsetMs = ထို Segment စတဲ့ Output Timeline အချိန်။
- * ဘယ်ဘက်အပေါ်မှာ အဝါရောင် Debug စာ ပါမည် (Output အချိန်၊ Cue နံပါတ်)။
- */
+/** offsetMs = ထို Segment စတဲ့ Output Timeline အချိန် */
 @androidx.annotation.OptIn(UnstableApi::class)
 class SubtitleBitmapOverlay(
     cues: List<SrtCue>,
@@ -44,37 +41,25 @@ class SubtitleBitmapOverlay(
 ) : BitmapOverlay() {
 
     private val sorted = cues.sortedBy { it.startMs }
-    private var currentKey = -1L
-    private var currentBitmap: Bitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+    private var currentIdx = -2
+    private val empty: Bitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+    private var currentBitmap: Bitmap = empty
 
     override fun getBitmap(presentationTimeUs: Long): Bitmap {
         val ms = presentationTimeUs / 1000 + offsetMs
         val idx = sorted.indexOfFirst { ms >= it.startMs && ms < it.endMs }
-        val key = (ms / 500) * 1000 + (idx + 1)
-        if (key != currentKey) {
-            currentKey = key
-            currentBitmap = render(if (idx < 0) null else sorted[idx].text, ms, idx)
+        if (idx != currentIdx) {
+            currentIdx = idx
+            currentBitmap = if (idx < 0) empty else render(sorted[idx].text)
         }
         return currentBitmap
     }
 
-    private fun render(text: String?, ms: Long, idx: Int): Bitmap {
+    private fun render(text: String): Bitmap {
         val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)
         val textSizePx = height * 0.045f
         val boxWidth = (width * 0.9f).toInt()
-
-        val dbg = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = height * 0.04f }
-        val dbgText = "t=%.1fs cue=%d/%d".format(ms / 1000.0, idx + 1, sorted.size)
-        dbg.style = Paint.Style.STROKE
-        dbg.strokeWidth = 4f
-        dbg.color = Color.BLACK
-        canvas.drawText(dbgText, 20f, height * 0.08f, dbg)
-        dbg.style = Paint.Style.FILL
-        dbg.color = Color.YELLOW
-        canvas.drawText(dbgText, 20f, height * 0.08f, dbg)
-
-        if (text.isNullOrBlank()) return bmp
 
         val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = textSizePx
