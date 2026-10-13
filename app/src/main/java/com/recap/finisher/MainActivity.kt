@@ -12,7 +12,9 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import com.recap.finisher.export.RecapExporter
 import com.recap.finisher.export.SegmentExporter
+import com.recap.finisher.export.TimeRange
 import com.recap.finisher.media.MediaInfo
 import com.recap.finisher.subtitle.SrtCue
 import com.recap.finisher.subtitle.SrtIssue
@@ -31,14 +33,20 @@ class MainActivity : AppCompatActivity() {
     private var mp3Ms = 0L
     private var videoMs = 0L
     private var videoUri: Uri? = null
+    private var mp3Uri: Uri? = null
 
     private var exportStatus = ""
+    private var recapStatus = ""
     private var segmentFile: File? = null
+    private var recapFile: File? = null
+    private var savingRecap = false
 
     private lateinit var infoView: TextView
     private lateinit var startInput: EditText
     private lateinit var endInput: EditText
+    private lateinit var rangesInput: EditText
     private lateinit var exporter: SegmentExporter
+    private lateinit var recapExporter: RecapExporter
 
     private val pickSrt =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -48,6 +56,7 @@ class MainActivity : AppCompatActivity() {
     private val pickMp3 =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) {
+                mp3Uri = uri
                 mp3Name = MediaInfo.displayName(this, uri)
                 mp3Ms = MediaInfo.durationMs(this, uri)
                 if (mp3Ms == 0L) toast("MP3 Duration ဖတ်မရပါ")
@@ -77,12 +86,15 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(
             ActivityResultContracts.CreateDocument("video/mp4")
         ) { uri ->
-            if (uri != null) copySegmentTo(uri)
+            if (uri != null) {
+                copyFileTo(if (savingRecap) recapFile else segmentFile, uri)
+            }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         exporter = SegmentExporter(this)
+        recapExporter = RecapExporter(this)
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -101,14 +113,26 @@ class MainActivity : AppCompatActivity() {
         root.addView(button("+100 ms ရွှေ့") { doShift(100) })
         root.addView(button("ပြင်ပြီး SRT သိမ်း") { doSave() })
 
-        root.addView(title("Video ဖြတ်ရန် (စမ်းသပ်)"))
+        root.addView(title("Segment တစ်ခုဖြတ် (စမ်းသပ်)"))
         startInput = numberInput("Start (စက္ကန့်) ဥပမာ 10")
         endInput = numberInput("End (စက္ကန့်) ဥပမာ 25")
         root.addView(startInput)
         root.addView(endInput)
         root.addView(button("Segment ဖြတ်ထုတ်") { doExport() })
-        root.addView(button("Export ရပ်မယ် (Cancel)") { doCancel() })
         root.addView(button("ဖြတ်ပြီးဖိုင်ကို MP4 အဖြစ်သိမ်း") { doSaveSegment() })
+
+        root.addView(title("Segment များပေါင်း + MP3 အသံ"))
+        rangesInput = EditText(this).apply {
+            hint = "တစ်ကြောင်းကို Segment တစ်ခု (စက္ကန့်)\nဥပမာ\n5-12\n40-48.5\n100-110"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 4
+            gravity = android.view.Gravity.TOP
+        }
+        root.addView(rangesInput)
+        root.addView(button("ပေါင်း + MP3 ထည့်ပြီး Export") { doRecap() })
+        root.addView(button("ပေါင်းပြီး MP4 ကို သိမ်း") { doSaveRecap() })
+
+        root.addView(button("Export အားလုံး ရပ်မယ် (Cancel)") { doCancel() })
 
         infoView = TextView(this).apply {
             textSize = 14f
@@ -123,6 +147,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         if (exporter.isRunning) exporter.cancel()
+        if (recapExporter.isRunning) recapExporter.cancel()
         super.onDestroy()
     }
 
@@ -188,7 +213,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ---------- Video Segment ဖြတ်ခြင်း ----------
+    // ---------- Segment တစ်ခုဖြတ်ခြင်း ----------
 
     private fun doExport() {
         val uri = videoUri
@@ -205,6 +230,7 @@ class MainActivity : AppCompatActivity() {
             toast("End က Video ကြာချိန် (${videoMs / 1000} စက္ကန့်) ထက်မကျော်ရ")
             return
         }
+        if (recapExporter.isRunning) { toast("ပေါင်း Export လုပ်နေဆဲ"); return }
 
         val out = File(cacheDir, "segment.mp4")
         segmentFile = null
@@ -228,21 +254,100 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun doCancel() {
-        if (!exporter.isRunning) { toast("Export မလုပ်နေပါ"); return }
-        exporter.cancel()
-        exportStatus = "Cancel လုပ်ပြီးပါပြီ"
-        refresh()
-    }
-
     private fun doSaveSegment() {
         val f = segmentFile
         if (f == null || !f.exists()) { toast("ဖြတ်ပြီးဖိုင် မရှိသေးပါ"); return }
+        savingRecap = false
         saveMp4.launch("segment.mp4")
     }
 
-    private fun copySegmentTo(uri: Uri) {
-        val f = segmentFile ?: return
+    // ---------- Segment များပေါင်း + MP3 ----------
+
+    /** "5-12" သို့မဟုတ် "5 12" စာကြောင်းများကို TimeRange စာရင်းအဖြစ်ပြောင်း */
+    private fun parseRanges(text: String): Pair<List<TimeRange>, String?> {
+        val result = mutableListOf<TimeRange>()
+        val lines = text.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        for ((i, line) in lines.withIndex()) {
+            val parts = line.split(Regex("\\s*[-–,]\\s*|\\s+"))
+            val s = parts.getOrNull(0)?.toDoubleOrNull()
+            val e = parts.getOrNull(1)?.toDoubleOrNull()
+            if (parts.size != 2 || s == null || e == null) {
+                return Pair(emptyList(), "စာကြောင်း ${i + 1} ပုံစံမှား: \"$line\" (ဥပမာ 5-12)")
+            }
+            if (s < 0 || e <= s) {
+                return Pair(emptyList(), "စာကြောင်း ${i + 1}: End က Start ထက်ကြီးရမယ်")
+            }
+            val startMs = (s * 1000).toLong()
+            val endMs = (e * 1000).toLong()
+            if (videoMs > 0L && endMs > videoMs) {
+                return Pair(emptyList(), "စာကြောင်း ${i + 1}: Video ကြာချိန်ထက် ကျော်နေသည်")
+            }
+            result.add(TimeRange(startMs, endMs))
+        }
+        if (result.isEmpty()) return Pair(emptyList(), "Segment စာရင်း ဗလာဖြစ်နေသည်")
+        return Pair(result, null)
+    }
+
+    private fun doRecap() {
+        val vUri = videoUri
+        val aUri = mp3Uri
+        if (vUri == null) { toast("Video အရင်ရွေးပါ"); return }
+        if (aUri == null || mp3Ms <= 0L) { toast("MP3 အရင်ရွေးပါ"); return }
+        if (exporter.isRunning) { toast("Segment Export လုပ်နေဆဲ"); return }
+
+        val (ranges, error) = parseRanges(rangesInput.text.toString())
+        if (error != null) { toast(error); return }
+
+        val totalMs = ranges.sumOf { it.durationMs }
+        val warn = when {
+            totalMs + 1000 < mp3Ms ->
+                "\n⚠ Video စုစုပေါင်း (${totalMs / 1000}s) က MP3 (${mp3Ms / 1000}s) ထက်တိုနေသည်၊ အသံအဆုံးပိုင်း ပါချင်မှ ပါမယ်"
+            totalMs > mp3Ms + 1000 ->
+                "\n⚠ Video စုစုပေါင်း (${totalMs / 1000}s) က MP3 (${mp3Ms / 1000}s) ထက်ရှည်နေသည်၊ အဆုံးပိုင်း အသံမရှိမယ်"
+            else -> ""
+        }
+
+        val out = File(cacheDir, "recap.mp4")
+        recapFile = null
+        recapStatus = "စတင်နေသည်... Segment ${ranges.size} ခု၊ ${totalMs / 1000} စက္ကန့်$warn"
+        refresh()
+
+        recapExporter.export(
+            videoUri = vUri,
+            ranges = ranges,
+            audioUri = aUri,
+            audioMs = mp3Ms,
+            output = out,
+            onProgress = { p ->
+                recapStatus = "Export လုပ်နေသည်: $p%$warn"
+                refresh()
+            },
+            onFinished = { ok, msg ->
+                recapStatus = msg + warn
+                if (ok) recapFile = out
+                refresh()
+            }
+        )
+    }
+
+    private fun doSaveRecap() {
+        val f = recapFile
+        if (f == null || !f.exists()) { toast("ပေါင်းပြီးဖိုင် မရှိသေးပါ"); return }
+        savingRecap = true
+        saveMp4.launch("recap.mp4")
+    }
+
+    private fun doCancel() {
+        if (!exporter.isRunning && !recapExporter.isRunning) {
+            toast("Export မလုပ်နေပါ"); return
+        }
+        if (exporter.isRunning) { exporter.cancel(); exportStatus = "Cancel လုပ်ပြီးပါပြီ" }
+        if (recapExporter.isRunning) { recapExporter.cancel(); recapStatus = "Cancel လုပ်ပြီးပါပြီ" }
+        refresh()
+    }
+
+    private fun copyFileTo(f: File?, uri: Uri) {
+        if (f == null) return
         try {
             contentResolver.openOutputStream(uri)?.use { out ->
                 f.inputStream().use { it.copyTo(out) }
@@ -287,9 +392,8 @@ class MainActivity : AppCompatActivity() {
             if (issues.size > 15) sb.append("... နောက်ထပ် ${issues.size - 15} ခု\n")
         }
 
-        if (exportStatus.isNotEmpty()) {
-            sb.append("\n[Segment Export] $exportStatus\n")
-        }
+        if (exportStatus.isNotEmpty()) sb.append("\n[Segment Export] $exportStatus\n")
+        if (recapStatus.isNotEmpty()) sb.append("\n[Recap Export] $recapStatus\n")
         infoView.text = sb.toString()
     }
 
