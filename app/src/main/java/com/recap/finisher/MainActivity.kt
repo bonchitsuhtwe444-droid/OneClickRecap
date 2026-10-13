@@ -1,5 +1,6 @@
 package com.recap.finisher
 
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
@@ -19,6 +20,7 @@ import com.recap.finisher.export.RecapExporter
 import com.recap.finisher.export.SegmentExporter
 import com.recap.finisher.export.TimeRange
 import com.recap.finisher.media.MediaInfo
+import com.recap.finisher.scene.SceneActivity
 import com.recap.finisher.subtitle.SrtCue
 import com.recap.finisher.subtitle.SrtIssue
 import com.recap.finisher.subtitle.SrtParser
@@ -109,8 +111,10 @@ class MainActivity : AppCompatActivity() {
         }
 
         root.addView(title("One-Click Recap"))
+        root.addView(button("🎬 Scene Test ဖွင့်") {
+            startActivity(Intent(this, SceneActivity::class.java))
+        })
 
-        // SRT စာသား Paste ကွက်
         srtInput = EditText(this).apply {
             hint = "ဒီမှာ SRT စာသား Paste လုပ်ပါ\n\n1\n00:00:01,000 --> 00:00:04,000\nစာတန်းစာသား"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
@@ -202,6 +206,7 @@ class MainActivity : AppCompatActivity() {
     // ---------- Timing ပြင်ခြင်း ----------
 
     private fun requireCues(): Boolean {
+        if (cues.isEmpty() && srtInput.text.isNotBlank()) loadSrtText()
         if (cues.isEmpty()) { toast("SRT အရင်ထည့်ပါ"); return false }
         return true
     }
@@ -335,7 +340,6 @@ class MainActivity : AppCompatActivity() {
         if (aUri == null || mp3Ms <= 0L) { toast("MP3 အရင်ရွေးပါ"); return }
         if (exporter.isRunning) { toast("Segment Export လုပ်နေဆဲ"); return }
 
-        // Paste လုပ်ထားပြီး "အသုံးပြု" မနှိပ်ရသေးရင် အလိုအလျောက် ဖတ်
         if (cues.isEmpty() && srtInput.text.isNotBlank()) loadSrtText()
 
         val (ranges, error) = parseRanges(rangesInput.text.toString())
@@ -455,7 +459,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun numberInput(hintText: String) = EditText(this).apply {
         hint = hintText
-        inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_NUMBER_FLAG_DECIMAL
         inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
     }
 
